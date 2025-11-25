@@ -196,12 +196,17 @@ def handle_userinput(user_question):
         # --- End timer and compute latency ---
         latency = round(time.time() - start_time, 3)
 
-        # --- Log retrieved chunks for evaluation ---
+        # --- Extract necessary data for logging and UI ---
+        current_llm_id = st.session_state.get('selected_llm', 'unknown_model')
+        session_id = st.session_state.get('session_id', 'no_session_id') # Used for logging
+
         retriever = st.session_state.conversation.retriever
         retrieved_docs = retriever.get_relevant_documents(user_question)
+        num_retrieved_chunks = len(retrieved_docs) # <-- New metric captured
         retrieved_preview = [d.page_content[:150].replace('\n', ' ') for d in retrieved_docs]
 
-        logging.info(f"[EVAL] Query='{user_question}' | Latency={latency}s | Retrieved={len(retrieved_docs)} chunks")
+        # --- Log the new metrics (as requested in the previous turn) ---
+        logging.info(f"[EVAL] SessionID='{session_id}' | LLM_ID='{current_llm_id}' | Query='{user_question}' | Latency={latency}s | Retrieved={num_retrieved_chunks} chunks")
         for i, doc in enumerate(retrieved_preview, 1):
             logging.info(f"[EVAL] Chunk {i}: {doc}")
 
@@ -210,8 +215,16 @@ def handle_userinput(user_question):
         st.markdown(f"<div class='bot-msg'>Assistant: {response['answer']}</div>", unsafe_allow_html=True)
         st.session_state.chat_history = response['chat_history']
 
-        # --- Show latency in Streamlit UI ---
-        st.info(f"Response time: {latency} seconds")
+        # --- Display Latency and other Metrics in Streamlit UI ---
+        # Use a sidebar or a dedicated expander for metrics for better UI organization
+        with st.expander("📊 **RAG Metrics for this Query**", expanded=True):
+            col_a, col_b, col_c = st.columns(3)
+            with col_a:
+                st.metric(label="🕰️ **Response Time**", value=f"{latency} s")
+            with col_b:
+                st.metric(label="🧠 **LLM Model ID**", value=current_llm_id.split('.')[-1].replace('-', ' ').title()) # Clean up ID for display
+            with col_c:
+                st.metric(label="📄 **Retrieved Chunks**", value=num_retrieved_chunks)
 
     except ValueError as e:
         st.warning("Sorry, please try rephrasing your question.")
@@ -366,10 +379,54 @@ def main():
 
 
 # ===============================================================
+# Logging Configuration Function
+# ===============================================================
+def setup_file_logging(log_filename='app_metrics.log', log_level=logging.INFO):
+    """Configures the root logger to output to a specified file with a custom format."""
+    
+    # Get the root logger
+    logger = logging.getLogger()
+    logger.setLevel(log_level)
+
+    # 1. Create a FileHandler
+    # Set filemode='a' to append logs, or 'w' to overwrite on each run (append is usually better)
+    file_handler = logging.FileHandler(log_filename, mode='a', encoding='utf-8')
+    file_handler.setLevel(log_level)
+    
+    # 2. Create a Formatter
+    # %(asctime)s: Timestamp
+    # %(levelname)s: Logging level (INFO, ERROR, etc.)
+    # %(message)s: The log message, which contains your [EVAL] data
+    formatter = logging.Formatter(
+        '%(asctime)s | %(levelname)s | %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    
+    # Apply formatter to handler
+    file_handler.setFormatter(formatter)
+    
+    # 3. Add handler to the logger
+    # Only add the handler if it's not already present (crucial for Streamlit reruns)
+    if not any(isinstance(handler, logging.FileHandler) and handler.baseFilename.endswith(log_filename) for handler in logger.handlers):
+        logger.addHandler(file_handler)
+    
+    # Note: Streamlit typically sets up a console handler by default. This preserves that.
+
+
+# ===============================================================
 # Entry Point
 # ===============================================================
 if __name__ == '__main__':
     load_dotenv()
+    
+    # --- New: Setup Logging before main() ---
+    try:
+        setup_file_logging(log_filename='app_metrics.log', log_level=logging.INFO)
+        logging.info("--- Application Startup ---")
+    except Exception as e:
+        print(f"Error setting up file logging: {e}")
+        
+    # --- Existing Database Setup ---
     CONNECTION_STRING = PGVector.connection_string_from_db_params(
         driver=os.environ.get("PGVECTOR_DRIVER"),
         user=os.environ.get("PGVECTOR_USER"),
